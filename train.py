@@ -38,6 +38,9 @@ from eval.metrics import AccuracyMatrix
 from methods.slao import SLAO
 from methods.seq_lora import SeqLoRA
 from methods.inc_lora import IncLoRA
+from methods.riemannian import RiemannianPreconditioner
+from methods.fisher import DiagonalFisher
+from methods.gpm import GradientProjectionMemory
 from utils import get_logger, set_seed
 
 logger = get_logger(__name__)
@@ -116,6 +119,26 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--eval_batch_size", type=int, default=8)
     p.add_argument("--max_new_tokens", type=int, default=16)
 
+    # Extensions
+    p.add_argument("--riemannian", action="store_true",
+                    help="Enable Riemannian preconditioning of LoRA gradients")
+    p.add_argument("--riemannian_delta", type=float, default=1e-6,
+                    help="Regularization for Riemannian matrix inversion")
+    p.add_argument("--fisher_lambda", type=float, default=0.0,
+                    help="Fisher regularization strength (0 = disabled)")
+    p.add_argument("--fisher_gamma", type=float, default=1.0,
+                    help="Fisher EMA decay: 1.0 = standard EWC (sum), <1.0 = online EWC")
+    p.add_argument("--fisher_samples", type=int, default=256,
+                    help="Samples for Fisher estimation per task")
+    p.add_argument("--fisher_merge_beta", type=float, default=0.0,
+                    help="Fisher-weighted B merge sensitivity (0 = uniform/standard SLAO)")
+    p.add_argument("--lora_plus_ratio", type=float, default=1.0,
+                    help="LoRA+ B_lr/A_lr ratio (1.0 = standard, paper recommends 2-16)")
+    p.add_argument("--gpm_threshold", type=float, default=0.0,
+                    help="GPM activation subspace threshold (0 = disabled, 0.90-0.99)")
+    p.add_argument("--gpm_samples", type=int, default=256,
+                    help="Reference samples for GPM activation SVD")
+
     # Reproducibility
     p.add_argument("--seed", type=int, default=42)
 
@@ -127,13 +150,30 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def build_optimizer(params, args) -> torch.optim.Optimizer:
-    """Construct optimizer from args."""
+def build_optimizer(model, trainable_params, args) -> torch.optim.Optimizer:
+    """Construct optimizer from args, with LoRA+ support."""
     cls = OPTIMIZER_REGISTRY[args.optimizer]
-    kwargs = {"lr": args.lr, "weight_decay": args.weight_decay}
+    opt_kwargs = {"weight_decay": args.weight_decay}
     if args.optimizer == "sgd":
-        kwargs["momentum"] = args.momentum
-    return cls(params, **kwargs)
+        opt_kwargs["momentum"] = args.momentum
+
+    if args.lora_plus_ratio != 1.0:
+        a_params, b_params = [], []
+        trainable_ids = {id(p) for p in trainable_params}
+        for name, param in model.named_parameters():
+            if id(param) not in trainable_ids:
+                continue
+            if "lora_A" in name:
+                a_params.append(param)
+            elif "lora_B" in name:
+                b_params.append(param)
+        param_groups = [
+            {"params": a_params, "lr": args.lr},
+            {"params": b_params, "lr": args.lr * args.lora_plus_ratio},
+        ]
+        return cls(param_groups, **opt_kwargs)
+    else:
+        return cls(trainable_params, lr=args.lr, **opt_kwargs)
 
 
 def train_one_task(
@@ -141,6 +181,9 @@ def train_one_task(
     train_dataset: CLDataset,
     method,
     args,
+    fisher: DiagonalFisher | None = None,
+    gpm: GradientProjectionMemory | None = None,
+    preconditioner: RiemannianPreconditioner | None = None,
 ) -> float:
     """Train the model on a single task. Returns the training loss."""
     device = next(model.parameters()).device
@@ -156,9 +199,10 @@ def train_one_task(
     )
 
     params = method.get_trainable_params()
-    optimizer = build_optimizer(params, args)
+    optimizer = build_optimizer(model, params, args)
     optimizer.zero_grad()
 
+    has_fisher = fisher is not None and fisher.fisher
     total_loss = 0.0
     step = 0
     global_step = 0
@@ -175,13 +219,24 @@ def train_one_task(
                 labels=labels,
             )
             loss = outputs.loss / args.grad_accum
+
+            # Fisher regularization (part of the loss, autograd handles it)
+            if has_fisher:
+                loss = loss + (args.fisher_lambda / 2) * fisher.penalty() / args.grad_accum
+
             loss.backward()
-            total_loss += loss.item() * args.grad_accum
+            total_loss += outputs.loss.item()
             step += 1
 
             if step % args.grad_accum == 0:
                 if args.max_grad_norm > 0:
                     torch.nn.utils.clip_grad_norm_(params, args.max_grad_norm)
+                # GPM: project A gradients orthogonal to protected subspace
+                if gpm is not None:
+                    gpm.project_grads()
+                # Riemannian: precondition surviving gradients
+                if preconditioner is not None:
+                    preconditioner.precondition_grads()
                 optimizer.step()
                 optimizer.zero_grad()
                 global_step += 1
@@ -196,6 +251,10 @@ def train_one_task(
         if step % args.grad_accum != 0:
             if args.max_grad_norm > 0:
                 torch.nn.utils.clip_grad_norm_(params, args.max_grad_norm)
+            if gpm is not None:
+                gpm.project_grads()
+            if preconditioner is not None:
+                preconditioner.precondition_grads()
             optimizer.step()
             optimizer.zero_grad()
 
@@ -209,17 +268,21 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save config for reproducibility
-    with open(output_dir / "config.json", "w") as f:
-        json.dump(vars(args), f, indent=2)
+    # Save config for reproducibility (include resolved task list)
+    config = vars(args).copy()
 
     logger.info(f"Config: {json.dumps(vars(args), indent=2)}")
 
     # ---- Parse task order ----
-    if args.task_order in ("O1", "O2", "O3", "O4", "O5", "O6"):
+    try:
         task_names = get_task_order(args.task_order)
-    else:
+        config["task_order_resolved"] = task_names
+    except ValueError:
         task_names = [t.strip() for t in args.task_order.split(",")]
+        config["task_order_resolved"] = task_names
+
+    with open(output_dir / "config.json", "w") as f:
+        json.dump(config, f, indent=2)
 
     num_tasks = len(task_names)
     logger.info(f"Task order ({num_tasks} tasks): {task_names}")
@@ -284,6 +347,36 @@ def main():
     method_cls = METHOD_REGISTRY[args.method]
     method = method_cls(model, args)
 
+    # ---- Instantiate extensions & wire into method ----
+    preconditioner = None
+    if args.riemannian:
+        preconditioner = RiemannianPreconditioner(model, delta=args.riemannian_delta)
+        logger.info("Extension: Riemannian preconditioning enabled")
+
+    fisher = None
+    needs_fisher = args.fisher_lambda > 0 or args.fisher_merge_beta > 0
+    if needs_fisher:
+        fisher = DiagonalFisher(model, gamma=args.fisher_gamma)
+        parts = []
+        if args.fisher_lambda > 0:
+            ewc_mode = "online" if args.fisher_gamma < 1.0 else "standard"
+            parts.append(f"{ewc_mode} EWC (λ={args.fisher_lambda}, γ={args.fisher_gamma})")
+        if args.fisher_merge_beta > 0:
+            parts.append(f"Fisher-weighted merge (β={args.fisher_merge_beta})")
+        logger.info(f"Extension: Fisher enabled — {', '.join(parts)}")
+
+    # Give SLAO access to Fisher for importance-weighted merging
+    if fisher is not None and hasattr(method, "fisher"):
+        method.fisher = fisher
+
+    gpm = None
+    if args.gpm_threshold > 0:
+        gpm = GradientProjectionMemory(model, threshold=args.gpm_threshold)
+        logger.info(f"Extension: GPM enabled (threshold={args.gpm_threshold})")
+
+    if args.lora_plus_ratio != 1.0:
+        logger.info(f"Extension: LoRA+ enabled (ratio={args.lora_plus_ratio})")
+
     # ---- Accuracy matrix for metrics ----
     acc_matrix = AccuracyMatrix(num_tasks)
 
@@ -323,12 +416,34 @@ def main():
 
         # 3. Train
         t0 = time.time()
-        avg_loss = train_one_task(model, train_ds, method, args)
+        avg_loss = train_one_task(
+            model, train_ds, method, args,
+            fisher=fisher, gpm=gpm, preconditioner=preconditioner,
+        )
         elapsed = time.time() - t0
         logger.info(f"Training loss: {avg_loss:.4f}, time: {elapsed:.1f}s")
 
         # 4. After task (merging, etc.)
         method.after_task(task_idx)
+
+        # 4b. Update extensions that need post-task processing
+        if fisher is not None:
+            fisher.snapshot_ref_params()
+            fisher_loader = DataLoader(
+                train_ds, batch_size=args.batch_size, shuffle=False,
+                collate_fn=collate_fn, drop_last=False,
+            )
+            fisher.estimate(fisher_loader, n_samples=args.fisher_samples)
+            logger.info(f"Fisher: estimated on {args.fisher_samples} samples")
+
+        if gpm is not None:
+            gpm_loader = DataLoader(
+                train_ds, batch_size=args.batch_size, shuffle=False,
+                collate_fn=collate_fn, drop_last=False,
+            )
+            gpm.update_memory(gpm_loader, n_samples=args.gpm_samples)
+            n_bases = sum(m.shape[1] for m in gpm.memory.values())
+            logger.info(f"GPM: memory updated, {n_bases} total basis vectors")
 
         # 5. Evaluate on all tasks seen so far
         logger.info(f"Evaluating on tasks 0..{task_idx}")
@@ -350,10 +465,25 @@ def main():
         if args.save_adapters:
             ckpt_dir = output_dir / f"task_{task_idx}_{task_name}"
             model.save_pretrained(str(ckpt_dir))
+            # Remove PEFT-generated boilerplate README
+            readme_path = ckpt_dir / "README.md"
+            if readme_path.exists():
+                readme_path.unlink()
             logger.info(f"Saved adapter to {ckpt_dir}")
 
-        # 7. Log intermediate metrics
-        logger.info(f"After task {task_idx}: {acc_matrix}")
+        # 7. Save per-task eval results
+        task_results_path = output_dir / f"task_{task_idx}_{task_name}" / "eval_results.json"
+        acc_matrix.save_task_results(str(task_results_path), task_idx, task_names)
+
+        # 8. Save running results (overwritten each task so partial runs are recoverable)
+        acc_matrix.save(str(output_dir / "results.json"))
+
+        # 9. Log intermediate metrics
+        cur_aa = acc_matrix.current_average_accuracy(task_idx)
+        cur_bwt = acc_matrix.current_backward_transfer(task_idx)
+        logger.info(
+            f"After task {task_idx}: AA={cur_aa:.4f}, BWT={cur_bwt:.4f}"
+        )
 
     # ---- Final results ----
     logger.info(f"\n{'='*60}")

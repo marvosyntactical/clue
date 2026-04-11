@@ -170,11 +170,10 @@ def load_task_data(
     label_key = cfg["label_key"]
 
     # Load raw HF dataset
-    kwargs = {"trust_remote_code": True}
     if cfg["hf_config"]:
-        raw = load_dataset(cfg["hf_dataset"], cfg["hf_config"], **kwargs)
+        raw = load_dataset(cfg["hf_dataset"], cfg["hf_config"])
     else:
-        raw = load_dataset(cfg["hf_dataset"], **kwargs)
+        raw = load_dataset(cfg["hf_dataset"])
 
     # Sample
     train_examples = _sample_per_class(

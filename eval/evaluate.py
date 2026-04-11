@@ -70,6 +70,7 @@ def evaluate_task(
             input_ids=input_ids,
             attention_mask=attention_mask,
             max_new_tokens=max_new_tokens,
+            max_length=None,
             do_sample=False,
             pad_token_id=pad_id,
         )

@@ -34,6 +34,9 @@ class SLAO(ContinualMethod):
         # State across tasks
         self.ft_state: LoRAState | None = None     # last fine-tuned state
         self.merge_state: LoRAState | None = None   # running merged state
+        # Fisher-weighted merging (set externally by train.py if enabled)
+        self.fisher = None            # DiagonalFisher instance
+        self.fisher_merge_beta = getattr(args, "fisher_merge_beta", 0.0)
 
     def before_task(self, task_idx: int, task_name: str) -> None:
         """Initialize LoRA for the new task.
@@ -89,9 +92,18 @@ class SLAO(ContinualMethod):
             B_ft = self.ft_state[layer_name]["B"]
             B_prev_merge = self.merge_state[layer_name]["B"]
 
+            # Look up Fisher for this layer's B matrix, if available
+            fisher_B = None
+            if self.fisher is not None and self.fisher_merge_beta > 0:
+                b_key = f"{layer_name}.lora_B.default.weight"
+                fisher_B = self.fisher.fisher.get(b_key)
+
             # Asymmetric merge
             A_merged = A_ft.clone()  # direct replacement
-            B_merged = merge_B(B_prev_merge, B_ft, paper_i)
+            B_merged = merge_B(
+                B_prev_merge, B_ft, paper_i,
+                fisher_B=fisher_B, beta=self.fisher_merge_beta,
+            )
 
             new_merge[layer_name] = {"A": A_merged, "B": B_merged}
 

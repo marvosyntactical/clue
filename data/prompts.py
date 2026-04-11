@@ -311,6 +311,15 @@ TASK_ORDERS = {
     "O1": ["yelp", "dbpedia", "amazon", "yahoo", "ag"],
     "O2": ["yelp", "dbpedia", "amazon", "ag", "yahoo"],
     "O3": ["yelp", "yahoo", "amazon", "ag", "dbpedia"],
+    # Dev subsets (prefixes of O4 for scaling analysis)
+    "O4dev": ["mnli", "qqp", "wic", "copa"],
+    "O4dev8": [
+        "mnli", "qqp", "wic", "copa", "boolqa", "rte", "imdb", "yelp",
+    ],
+    "O4dev12": [
+        "mnli", "qqp", "wic", "copa", "boolqa", "rte", "imdb", "yelp",
+        "amazon", "sst-2", "dbpedia", "ag",
+    ],
     # Large Number of Tasks (15 tasks)
     "O4": [
         "mnli", "cb", "wic", "copa", "qqp", "boolqa", "rte", "imdb",

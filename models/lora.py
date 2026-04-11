@@ -92,19 +92,44 @@ def orthogonal_init_A(A_prev: torch.Tensor) -> torch.Tensor:
 
 
 def merge_B(
-    B_merge: torch.Tensor, B_ft: torch.Tensor, task_idx: int
+    B_merge: torch.Tensor,
+    B_ft: torch.Tensor,
+    task_idx: int,
+    fisher_B: torch.Tensor | None = None,
+    beta: float = 0.0,
 ) -> torch.Tensor:
-    """Time-aware merging of B matrices.
+    """Time-aware merging of B matrices, optionally Fisher-weighted.
 
-    B_merge_new = B_merge + λ(i) * (B_ft - B_merge), λ(i) = 1/√i.
+    Standard (beta=0):
+        B_new = B_merge + λ * (B_ft - B_merge),  λ = 1/√i
+
+    Fisher-weighted (beta>0):
+        α_jk = λ / (1 + β · F̃_jk)
+        B_new_jk = B_merge_jk + α_jk · (B_ft_jk - B_merge_jk)
+
+    where F̃ = F / mean(F) is the normalized Fisher for this B matrix.
 
     Args:
-        B_merge: (d, r) current merged B.
-        B_ft:    (d, r) fine-tuned B from current task.
+        B_merge:  (d, r) current merged B.
+        B_ft:     (d, r) fine-tuned B from current task.
         task_idx: 1-indexed task number (>= 2).
+        fisher_B: (d, r) accumulated diagonal Fisher for this B. None = uniform.
+        beta:     sensitivity to Fisher importance (0 = standard SLAO).
     """
     lam = 1.0 / math.sqrt(task_idx)
-    return B_merge + lam * (B_ft - B_merge)
+
+    if fisher_B is None or beta == 0:
+        return B_merge + lam * (B_ft - B_merge)
+
+    # Normalize Fisher to mean 1 so beta is scale-invariant
+    f_mean = fisher_B.mean()
+    if f_mean > 0:
+        F_norm = fisher_B / f_mean
+    else:
+        F_norm = fisher_B
+
+    alpha = lam / (1.0 + beta * F_norm)
+    return B_merge + alpha * (B_ft - B_merge)
 
 
 def clone_state(state: LoRAState) -> LoRAState:
