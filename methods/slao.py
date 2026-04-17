@@ -18,8 +18,10 @@ from models.lora import (
     clone_state,
     extract_lora_state,
     merge_B,
+    merge_B_bayesian,
     orthogonal_init_A,
     set_lora_state,
+    zca_whiten_A,
 )
 from utils import get_logger
 
@@ -37,6 +39,14 @@ class SLAO(ContinualMethod):
         # Fisher-weighted merging (set externally by train.py if enabled)
         self.fisher = None            # DiagonalFisher instance
         self.fisher_merge_beta = getattr(args, "fisher_merge_beta", 0.0)
+        # A initialization method: "qr" (default) or "zca"
+        self.a_init_method = getattr(args, "a_init_method", "qr")
+        # Bayesian merge (set externally by train.py if enabled)
+        self.bayesian_merge = getattr(args, "bayesian_merge", False)
+        self.bayesian_alpha_min = getattr(args, "bayesian_alpha_min", 0.01)
+        self.bayesian_alpha_max = getattr(args, "bayesian_alpha_max", 0.95)
+        self.bayesian_lambda_damping = getattr(args, "bayesian_lambda_damping", False)
+        self.fisher_new: dict[str, 'torch.Tensor'] | None = None  # set before merge
 
     def before_task(self, task_idx: int, task_name: str) -> None:
         """Initialize LoRA for the new task.
@@ -50,14 +60,15 @@ class SLAO(ContinualMethod):
 
         assert self.ft_state is not None, "ft_state must exist after task 0"
 
+        init_fn = zca_whiten_A if self.a_init_method == "zca" else orthogonal_init_A
         logger.info(
             f"Task {task_idx} ({task_name}): "
-            "orthogonal A init + previous B init"
+            f"{self.a_init_method.upper()} A init + previous B init"
         )
         new_state = {}
         for layer_name, prev in self.ft_state.items():
-            A_new = orthogonal_init_A(prev["A"])  # (r, d)
-            B_new = prev["B"].clone()             # (d, r)
+            A_new = init_fn(prev["A"])    # (r, d)
+            B_new = prev["B"].clone()     # (d, r)
             new_state[layer_name] = {"A": A_new, "B": B_new}
 
         set_lora_state(self.model, new_state)
@@ -91,20 +102,35 @@ class SLAO(ContinualMethod):
             A_ft = self.ft_state[layer_name]["A"]
             B_ft = self.ft_state[layer_name]["B"]
             B_prev_merge = self.merge_state[layer_name]["B"]
+            b_key = f"{layer_name}.lora_B.default.weight"
 
-            # Look up Fisher for this layer's B matrix, if available
-            fisher_B = None
-            if self.fisher is not None and self.fisher_merge_beta > 0:
-                b_key = f"{layer_name}.lora_B.default.weight"
-                fisher_B = self.fisher.fisher.get(b_key)
+            if self.bayesian_merge and self.fisher_new is not None:
+                # Bayesian merge: use both F_old and F_new
+                f_old = self.fisher.fisher.get(b_key) if self.fisher else None
+                f_new = self.fisher_new.get(b_key)
+                if f_new is not None:
+                    B_merged = merge_B_bayesian(
+                        B_prev_merge, B_ft,
+                        fisher_old=f_old,
+                        fisher_new=f_new,
+                        alpha_min=self.bayesian_alpha_min,
+                        alpha_max=self.bayesian_alpha_max,
+                        use_lambda_damping=self.bayesian_lambda_damping,
+                        task_idx=paper_i,
+                    )
+                else:
+                    B_merged = merge_B(B_prev_merge, B_ft, paper_i)
+            else:
+                # Standard or Fisher-weighted merge
+                fisher_B = None
+                if self.fisher is not None and self.fisher_merge_beta > 0:
+                    fisher_B = self.fisher.fisher.get(b_key)
+                B_merged = merge_B(
+                    B_prev_merge, B_ft, paper_i,
+                    fisher_B=fisher_B, beta=self.fisher_merge_beta,
+                )
 
-            # Asymmetric merge
-            A_merged = A_ft.clone()  # direct replacement
-            B_merged = merge_B(
-                B_prev_merge, B_ft, paper_i,
-                fisher_B=fisher_B, beta=self.fisher_merge_beta,
-            )
-
+            A_merged = A_ft.clone()
             new_merge[layer_name] = {"A": A_merged, "B": B_merged}
 
         self.merge_state = new_merge

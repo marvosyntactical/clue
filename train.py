@@ -38,6 +38,7 @@ from eval.metrics import AccuracyMatrix
 from methods.slao import SLAO
 from methods.seq_lora import SeqLoRA
 from methods.inc_lora import IncLoRA
+from methods.stiefel_clue import StiefelizedCLUE
 from methods.riemannian import RiemannianPreconditioner
 from methods.fisher import DiagonalFisher
 from methods.gpm import GradientProjectionMemory
@@ -53,6 +54,7 @@ METHOD_REGISTRY = {
     "slao": SLAO,
     "seq_lora": SeqLoRA,
     "inc_lora": IncLoRA,
+    "stiefel": StiefelizedCLUE,
 }
 
 # ---------------------------------------------------------------------------
@@ -89,6 +91,9 @@ def parse_args() -> argparse.Namespace:
     # Method
     p.add_argument("--method", type=str, default="slao",
                     choices=list(METHOD_REGISTRY.keys()))
+    p.add_argument("--a_init_method", type=str, default="qr",
+                    choices=["qr", "zca"],
+                    help="A-matrix init: 'qr' (Gram-Schmidt) or 'zca' (whitening)")
 
     # Task ordering
     p.add_argument("--task_order", type=str, default="O4",
@@ -132,6 +137,14 @@ def parse_args() -> argparse.Namespace:
                     help="Samples for Fisher estimation per task")
     p.add_argument("--fisher_merge_beta", type=float, default=0.0,
                     help="Fisher-weighted B merge sensitivity (0 = uniform/standard SLAO)")
+    p.add_argument("--bayesian_merge", action="store_true",
+                    help="Use Bayesian posterior-style merge (F_new and F_old)")
+    p.add_argument("--bayesian_alpha_min", type=float, default=0.01,
+                    help="Floor on per-param Bayesian merge rate")
+    p.add_argument("--bayesian_alpha_max", type=float, default=0.95,
+                    help="Cap on per-param Bayesian merge rate")
+    p.add_argument("--bayesian_lambda_damping", action="store_true",
+                    help="Apply 1/sqrt(i) damping on top of Bayesian merge")
     p.add_argument("--lora_plus_ratio", type=float, default=1.0,
                     help="LoRA+ B_lr/A_lr ratio (1.0 = standard, paper recommends 2-16)")
     p.add_argument("--gpm_threshold", type=float, default=0.0,
@@ -354,7 +367,7 @@ def main():
         logger.info("Extension: Riemannian preconditioning enabled")
 
     fisher = None
-    needs_fisher = args.fisher_lambda > 0 or args.fisher_merge_beta > 0
+    needs_fisher = args.fisher_lambda > 0 or args.fisher_merge_beta > 0 or args.bayesian_merge
     if needs_fisher:
         fisher = DiagonalFisher(model, gamma=args.fisher_gamma)
         parts = []
@@ -363,6 +376,8 @@ def main():
             parts.append(f"{ewc_mode} EWC (λ={args.fisher_lambda}, γ={args.fisher_gamma})")
         if args.fisher_merge_beta > 0:
             parts.append(f"Fisher-weighted merge (β={args.fisher_merge_beta})")
+        if args.bayesian_merge:
+            parts.append(f"Bayesian merge (α∈[{args.bayesian_alpha_min}, {args.bayesian_alpha_max}])")
         logger.info(f"Extension: Fisher enabled — {', '.join(parts)}")
 
     # Give SLAO access to Fisher for importance-weighted merging
@@ -374,8 +389,18 @@ def main():
         gpm = GradientProjectionMemory(model, threshold=args.gpm_threshold)
         logger.info(f"Extension: GPM enabled (threshold={args.gpm_threshold})")
 
+    if args.bayesian_merge:
+        logger.info(
+            f"Extension: Bayesian merge enabled "
+            f"(α∈[{args.bayesian_alpha_min}, {args.bayesian_alpha_max}], "
+            f"λ-damping={'on' if args.bayesian_lambda_damping else 'off'})"
+        )
+
     if args.lora_plus_ratio != 1.0:
         logger.info(f"Extension: LoRA+ enabled (ratio={args.lora_plus_ratio})")
+
+    if args.a_init_method != "qr":
+        logger.info(f"Extension: A init method = {args.a_init_method.upper()}")
 
     # ---- Accuracy matrix for metrics ----
     acc_matrix = AccuracyMatrix(num_tasks)
@@ -423,18 +448,33 @@ def main():
         elapsed = time.time() - t0
         logger.info(f"Training loss: {avg_loss:.4f}, time: {elapsed:.1f}s")
 
-        # 4. After task (merging, etc.)
-        method.after_task(task_idx)
-
-        # 4b. Update extensions that need post-task processing
+        # 4. Pre-merge Fisher estimation (Bayesian merge needs F_new before merge)
+        fisher_new = None
+        fisher_loader = None
         if fisher is not None:
-            fisher.snapshot_ref_params()
             fisher_loader = DataLoader(
                 train_ds, batch_size=args.batch_size, shuffle=False,
                 collate_fn=collate_fn, drop_last=False,
             )
-            fisher.estimate(fisher_loader, n_samples=args.fisher_samples)
-            logger.info(f"Fisher: estimated on {args.fisher_samples} samples")
+            if args.bayesian_merge:
+                fisher_new = fisher.estimate_new(fisher_loader, n_samples=args.fisher_samples)
+                if hasattr(method, "fisher_new"):
+                    method.fisher_new = fisher_new
+                logger.info(f"Fisher: estimated F_new for Bayesian merge")
+
+        # 5. After task (merging, etc.)
+        method.after_task(task_idx)
+
+        # 5b. Accumulate Fisher and snapshot reference
+        if fisher is not None:
+            if fisher_new is not None:
+                # Bayesian path: F_new already computed, just accumulate
+                fisher.accumulate(fisher_new)
+            else:
+                # Standard path: estimate and accumulate in one step
+                fisher.estimate(fisher_loader, n_samples=args.fisher_samples)
+            fisher.snapshot_ref_params()
+            logger.info(f"Fisher: accumulated, ref params snapshotted")
 
         if gpm is not None:
             gpm_loader = DataLoader(

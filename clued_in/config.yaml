@@ -1,0 +1,45 @@
+model:
+  name: "Qwen/Qwen2.5-7B-Instruct"
+  quantization: "nf4"
+  compute_dtype: "bfloat16"
+
+lora:
+  rank: 16
+  alpha: 32
+  target_modules: "all-linear"
+  dropout: 0.0
+
+training:
+  optimizer: "adamw"
+  lr: 2.0e-4
+  weight_decay: 0.0
+  batch_size: 4
+  grad_accum: 2
+  epochs: 3
+  max_length: 2048
+  max_grad_norm: 1.0
+  seed: 42
+
+clue:
+  method: "slao"
+  a_init_method: "zca"
+  fisher_lambda: 0.1
+  fisher_gamma: 0.9
+  fisher_samples: 128
+  fisher_merge_beta: 0.5
+
+inference:
+  max_new_tokens: 512
+  temperature: 0.7
+  top_p: 0.9
+  repetition_penalty: 1.1
+
+ui:
+  server_name: "0.0.0.0"
+  server_port: 7860
+  system_prompt: "You are a helpful assistant."
+
+paths:
+  sessions_dir: "clued_in/sessions"
+  adapters_dir: "clued_in/adapters"
+  current_adapter: "clued_in/adapters/current"

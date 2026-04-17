@@ -38,11 +38,8 @@ class DiagonalFisher:
         self.ref_params: dict[str, torch.Tensor] = {}
 
     @torch.no_grad()
-    def estimate(self, data_loader: DataLoader, n_samples: int = 256):
-        """Estimate diagonal Fisher on a subset of the current task's data.
-
-        Uses the empirical Fisher: F_j = E[(∂L/∂θ_j)²].
-        """
+    def _compute_fisher(self, data_loader: DataLoader, n_samples: int = 256) -> dict[str, torch.Tensor]:
+        """Compute per-task diagonal Fisher (not accumulated)."""
         self.model.eval()
         device = next(self.model.parameters()).device
 
@@ -75,11 +72,26 @@ class DiagonalFisher:
 
         self.model.zero_grad()
 
-        # Average this task's Fisher estimate
         for name in fisher_new:
             fisher_new[name].div_(max(count, 1))
 
-        # Accumulate: standard EWC sums, online EWC uses EMA
+        return fisher_new
+
+    def estimate_new(self, data_loader: DataLoader, n_samples: int = 256) -> dict[str, torch.Tensor]:
+        """Estimate Fisher for the current task WITHOUT accumulating.
+
+        Returns the raw per-task Fisher dict. Use for Bayesian merge
+        (need F_new before it gets folded into F_old).
+        """
+        return self._compute_fisher(data_loader, n_samples)
+
+    def estimate(self, data_loader: DataLoader, n_samples: int = 256):
+        """Estimate diagonal Fisher and accumulate into running total."""
+        fisher_new = self._compute_fisher(data_loader, n_samples)
+        self.accumulate(fisher_new)
+
+    def accumulate(self, fisher_new: dict[str, torch.Tensor]):
+        """Fold a per-task Fisher into the running accumulator."""
         for name, f_new in fisher_new.items():
             if name in self.fisher:
                 self.fisher[name] = self.gamma * self.fisher[name] + f_new

@@ -17,6 +17,8 @@ too, not just SLAO.
 | 3 | LoRA+ (Asymmetric LR) | Optimizer (per-group LR) | `--lora_plus_ratio <float>` |
 | 4 | Gradient Projection Memory | Gradient update (projection) | `--gpm_threshold <float>` |
 | 5 | Fisher-Weighted B Merging | Post-task merge (per-param rate) | `--fisher_merge_beta <float>` |
+| 5b | Bayesian B Merging | Post-task merge (precision-weighted) | `--bayesian_merge` |
+| 6 | ZCA Whitening A Init | A initialization (pre-task) | `--a_init_method zca` |
 
 Composability matrix (all pairs are compatible):
 
@@ -743,6 +745,228 @@ still runs (needed for the merge) but no EWC penalty is added to the loss.
 
 ---
 
+## Extension 5b: Bayesian Posterior-Style B Merging
+
+**Background:** Extension of Fisher-weighted merging (5) that uses *both* the
+old (accumulated) and new (current task) Fisher to derive per-parameter merge
+rates from a precision-weighted posterior mean.
+
+### Core idea
+
+Standard SLAO merges B with a uniform rate λ(i) = 1/√i. Extension 5 modulates
+this by the old Fisher (parameters important to old tasks merge slowly).
+Bayesian merging goes further: it uses both F_old and F_new to derive a merge
+rate that is the Bayesian posterior weight between two diagonal Gaussians.
+
+The merge rate for each parameter is:
+
+```
+α_jk = F̃_new_jk / (F̃_old_jk + F̃_new_jk + ε)
+```
+
+where F̃_old and F̃_new are each normalized per-layer to mean 1 (removing scale
+differences from accumulation).
+
+**Interpretation:**
+- When F_new >> F_old: α → 1 — the new task cares about this parameter more
+  than old tasks do, so absorb the new value.
+- When F_old >> F_new: α → 0 — old tasks relied on this parameter heavily but
+  the new task doesn't, so keep the old merged value.
+- When F_old ≈ F_new: α → 0.5 — equal evidence, take the midpoint.
+
+The result is clamped to `[alpha_min, alpha_max]` to prevent complete freezing
+or complete overwrite of any parameter.
+
+### Difference from Extension 5
+
+Extension 5 (`--fisher_merge_beta`) modulates the *base* rate λ(i) downward
+for important-to-old-tasks parameters:
+
+```
+α = λ / (1 + β · F̃_old)
+```
+
+It only looks at F_old — parameters unimportant to old tasks get the full λ
+regardless of whether the new task cares about them.
+
+Bayesian merge uses *both* Fishers. A parameter that is unimportant to both
+old and new tasks gets α ≈ 0.5 (the ε term), while a parameter that is
+important only to the new task gets α → 1.0. This is more principled: the
+merge rate reflects the relative information content from both sides.
+
+### Optional: λ-damping
+
+By default, Bayesian merge has no explicit dependence on task index — the
+average α stays around 0.5 regardless of how many tasks have been seen. The
+`--bayesian_lambda_damping` flag multiplies α by 1/√i to recover SLAO's
+decreasing-rate behavior:
+
+```
+α_damped = α * (1 / √i)
+```
+
+This may be useful on long task sequences where later tasks should contribute
+less to the merged state.
+
+### Interaction with SLAO and other extensions
+
+- **Mutually exclusive with Extension 5:** `--bayesian_merge` and
+  `--fisher_merge_beta` cannot both be active (Bayesian merge takes precedence
+  when `self.fisher_new is not None`).
+- **Requires Fisher estimation:** `--bayesian_merge` triggers Fisher estimation
+  regardless of `--fisher_lambda`. The per-task F_new is computed before the
+  merge, then accumulated into F_old afterward.
+- **Compatible with EWC (Extension 2):** Fisher estimation is shared. EWC acts
+  during training; Bayesian merge acts at merge time.
+- **Compatible with all other extensions:** Riemannian, LoRA+, GPM, ZCA init.
+
+### Implementation
+
+Uses the existing `merge_B_bayesian()` in `models/lora.py`. The per-task Fisher
+is estimated via `fisher.estimate_new()` before merging, then accumulated into
+the running Fisher via `fisher.accumulate()` afterward.
+
+**Key code path in `train.py`:**
+
+```python
+# Before merge: estimate F_new for this task
+fisher_new = fisher.estimate_new(fisher_loader, n_samples=args.fisher_samples)
+method.fisher_new = fisher_new
+
+# Merge (uses F_old from fisher.fisher and F_new from method.fisher_new)
+method.after_task(task_idx)
+
+# After merge: fold F_new into accumulated F_old
+fisher.accumulate(fisher_new)
+fisher.snapshot_ref_params()
+```
+
+### CLI
+
+```
+--bayesian_merge              Enable Bayesian posterior-style merge
+--bayesian_alpha_min 0.01     Floor on per-param merge rate
+--bayesian_alpha_max 0.95     Cap on per-param merge rate
+--bayesian_lambda_damping     Multiply α by 1/√i (decreasing rate over tasks)
+```
+
+### Hyperparameters
+
+| Param | Default | Notes |
+|-------|---------|-------|
+| `bayesian_alpha_min` | 0.01 | Floor prevents complete freezing. |
+| `bayesian_alpha_max` | 0.95 | Cap prevents complete overwrite. |
+| `bayesian_lambda_damping` | off | Enable for longer sequences (T > 5). |
+
+### Empirical results (O4dev, 4 tasks: mnli → qqp → wic → copa)
+
+| Config | AA | BWT |
+|--------|------|-------|
+| Baseline (standard SLAO) | 0.8115 | -0.0175 |
+| `--bayesian_merge` (defaults) | 0.8161 | -0.0120 |
+
+Bayesian merge improves BWT (less forgetting on task 0: 0.819→0.837) with a
+slight AA gain. The improvement is marginal on 4 tasks; the per-parameter
+differentiation should matter more on longer sequences where the accumulated
+Fisher has more signal.
+
+### Tuning notes
+
+With default parameters, the first merge (task 1→2) uses `fisher_old=None` so
+α is clamped to alpha_max=0.95 — nearly full overwrite. Standard SLAO uses
+λ(2) = 1/√2 ≈ 0.71. This means the Bayesian merge is *more aggressive* on
+the first merge, which may hurt early-task retention.
+
+Possible improvements to try:
+- **Lower alpha_max to 0.7–0.8** to match SLAO's natural rate at task 2
+- **Enable lambda_damping** for longer sequences
+- **Raise alpha_min to 0.05** so no parameter is completely frozen
+
+---
+
+## Extension 6: ZCA Whitening A Initialization
+
+**Background:** Alternative to SLAO's QR-based orthogonal initialization of A.
+
+### Core idea
+
+SLAO initializes each new task's A via QR decomposition of the previous task's
+fine-tuned A. QR produces orthonormal rows (`A_init @ A_init.T = I_r`) but
+imposes an artificial ordering via the Gram-Schmidt sequence — the first row
+of Q captures the direction closest to the first row of A_prev, the second row
+captures the next orthogonal direction, and so on. This ordering is arbitrary
+and discards directional structure that SGD learned.
+
+ZCA (Zero-phase Component Analysis) whitening produces the **same orthonormality
+guarantee** (`A_init @ A_init.T = I_r`) but with a different canonical gauge:
+the one **closest to A_prev in Frobenius norm**. This preserves more of the
+directional structure from training.
+
+The formula is:
+
+```
+A_init = (A_prev @ A_prev^T)^{-1/2} @ A_prev
+```
+
+where `(A_prev @ A_prev^T)^{-1/2}` is the symmetric matrix inverse square root
+(computed via eigendecomposition of the small r×r Gram matrix).
+
+### Why this works
+
+Both QR and ZCA satisfy the orthonormality constraint that SLAO requires.
+The difference is the choice of *which* orthonormal basis to use:
+
+- **QR:** The unique one produced by Gram-Schmidt (with sign correction).
+  Depends on the ordering of rows in A_prev.
+- **ZCA:** The unique one that minimizes `||A_init - A_prev||_F`.
+  Invariant to row ordering and preserves directional structure.
+
+ZCA is the orthogonal Procrustes solution: among all matrices with orthonormal
+rows, it is the one closest to A_prev. This means the new task starts from an
+initialization that respects the geometry SGD found, rather than an arbitrary
+re-orthogonalization.
+
+### Computational cost
+
+Identical to QR in practice. The Gram matrix `A A^T` is `(r, r)` where r=8,
+so the eigendecomposition is trivially cheap. Both methods are dominated by the
+matrix multiply `A_prev @ A_prev^T` or `QR(A_prev^T)`, both O(r²d).
+
+### Implementation
+
+One new function in `models/lora.py`:
+
+```python
+def zca_whiten_A(A_prev: torch.Tensor) -> torch.Tensor:
+    G = A_prev @ A_prev.T                    # (r, r)
+    eigvals, V = torch.linalg.eigh(G)
+    eigvals = eigvals.clamp(min=1e-12)
+    inv_sqrt = V @ torch.diag(eigvals.rsqrt()) @ V.T
+    return inv_sqrt @ A_prev                  # (r, d)
+```
+
+`methods/slao.py` selects the init function based on `args.a_init_method`.
+
+### Interaction with other extensions
+
+ZCA init is a drop-in replacement for QR init. It changes only the pre-task
+A initialization and is fully compatible with all other extensions (Riemannian,
+EWC, LoRA+, GPM, Fisher-weighted merging). The orthonormality property
+`A_init @ A_init.T = I_r` is preserved, so Riemannian preconditioning still
+starts with a clean identity B-preconditioner at task start.
+
+### CLI
+
+```
+--a_init_method zca    # Use ZCA whitening instead of QR (default: qr)
+```
+
+### Hyperparameters
+
+None — ZCA whitening is parameter-free.
+
+---
+
 ## Ordering of operations in the training step
 
 When multiple extensions are active, the gradient modification order is:
@@ -811,7 +1035,10 @@ python train.py --method slao --task_order O4 --fisher_lambda 0.5 ...
 # GPM only
 python train.py --method slao --task_order O4 --gpm_threshold 0.95 ...
 
-# All four combined
+# ZCA whitening init
+python train.py --method slao --task_order O4 --a_init_method zca ...
+
+# All combined
 python train.py --method slao --task_order O4 \
-    --lora_plus_ratio 4 --riemannian --fisher_lambda 0.5 --gpm_threshold 0.95 ...
+    --a_init_method zca --lora_plus_ratio 4 --riemannian --fisher_lambda 0.5 --gpm_threshold 0.95 ...
 ```

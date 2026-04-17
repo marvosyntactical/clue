@@ -1,0 +1,67 @@
+# LIBERO-Object suite configuration for CLUE VLA continual learning.
+#
+# 10 manipulation tasks, 300-step horizon, same scene with different objects.
+# Task order follows the default LIBERO benchmark ordering (indices 0-9).
+
+suite: libero_object
+dataset_name: libero_object_no_noops
+max_steps: 300
+n_tasks: 10
+
+# Task names in sequential CL order (LIBERO default ordering).
+# Each entry maps to a LIBERO task specification from the benchmark.
+tasks:
+  - pick_up_the_alphabet_soup_and_place_it_in_the_basket
+  - pick_up_the_cream_cheese_and_place_it_in_the_bowl
+  - pick_up_the_butter_and_place_it_in_the_basket
+  - pick_up_the_wine_bottle_and_place_it_in_the_rack
+  - pick_up_the_orange_juice_and_place_it_in_the_basket
+  - pick_up_the_bbq_sauce_and_place_it_in_the_basket
+  - pick_up_the_ketchup_and_place_it_in_the_basket
+  - pick_up_the_tomato_sauce_and_place_it_in_the_basket
+  - pick_up_the_milk_and_place_it_in_the_basket
+  - pick_up_the_chocolate_pudding_and_place_it_in_the_basket
+
+# Training hyperparameters (from vla.md Section 5)
+training:
+  lr: 5e-4
+  optimizer: adamw
+  weight_decay: 0.0
+  batch_size: 16
+  grad_accum: 4
+  epochs_per_task: 3
+  max_grad_norm: 1.0
+  torch_dtype: bfloat16
+
+# LoRA configuration (OpenVLA defaults)
+lora:
+  rank: 32
+  alpha: 16
+  dropout: 0.0
+  target_modules: all-linear
+
+# CLUE extensions (recommended config from Robot.md)
+extensions:
+  fisher_merge_beta: 0.5
+  fisher_lambda: 0.1
+  fisher_gamma: 0.9
+  fisher_samples: 256
+
+# Evaluation
+eval:
+  n_rollouts_iter: 20       # During iteration
+  n_rollouts_final: 50      # For final numbers
+  max_steps: 300
+  n_parallel_envs: 8
+
+# Additional suites (same structure, different dataset_name / max_steps)
+suites:
+  libero_long:
+    dataset_name: libero_long_no_noops
+    max_steps: 600
+  libero_spatial:
+    dataset_name: libero_spatial_no_noops
+    max_steps: 300
+  libero_goal:
+    dataset_name: libero_goal_no_noops
+    max_steps: 300
