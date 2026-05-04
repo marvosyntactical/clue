@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-store">
+<title>CLUED IN</title>
+<link rel="icon" type="image/png" href="/icons/favicon_32.png" sizes="32x32">
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,600;1,400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --green:#3a6b4c; --green-light:#4a8b62; --green-pale:#e8f0eb;
+  --text:#1a1a1a; --text-muted:#6b7280;
+  --bg:#f5f5f0; --card:#ffffff; --border:#d1d5db;
+  --serif:"EB Garamond",Georgia,serif; --sans:"Inter",system-ui,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--sans);background:var(--bg);color:var(--text);min-height:100vh}
+header{padding:.75rem 1.5rem;display:flex;align-items:center;gap:.6rem;border-bottom:1px solid var(--border);background:var(--card)}
+header img{height:24px} header h1{font-family:var(--serif);font-size:1.2rem;font-weight:600;color:var(--green)}
+.container{display:flex;height:calc(100vh - 49px)}
+.sidebar{width:240px;min-width:240px;border-right:1px solid var(--border);background:var(--card);display:flex;flex-direction:column;overflow:hidden}
+.sidebar-header{padding:.6rem .75rem;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.sidebar-header h2{font-family:var(--serif);font-size:.9rem;font-weight:600;color:var(--green)}
+.btn-new{font-size:.65rem;padding:2px 7px;border-radius:5px;background:var(--green-pale);color:var(--green);border:1px solid var(--green);cursor:pointer;font-family:var(--sans)}
+.btn-new:hover{background:var(--green);color:white}
+.sessions-list{flex:1;overflow-y:auto}
+.session-item{padding:.45rem .75rem;border-bottom:1px solid #f0f0f0;font-size:.75rem;line-height:1.3;cursor:pointer}
+.session-item:hover{background:var(--green-pale)} .session-item.active{background:#d4e8da}
+.session-item .label{font-weight:500;color:var(--green)}
+.session-item .summary{color:var(--text-muted);font-size:.68rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.badge{display:inline-block;font-size:.58rem;padding:1px 5px;border-radius:8px;margin-left:3px}
+.badge.learned{background:var(--green-pale);color:var(--green)}
+.badge.pending{background:#fef3c7;color:#92400e}
+.badge.learning{background:#dbeafe;color:#1e40af}
+.status-area{padding:.5rem .75rem;border-top:1px solid var(--border);font-size:.72rem;background:var(--green-pale)}
+.status-area .state{font-weight:500}
+.main{flex:1;display:flex;flex-direction:column;background:var(--bg);min-width:0}
+.messages{flex:1;overflow-y:auto;padding:1.5rem 2rem;display:flex;flex-direction:column;gap:.75rem}
+.message{max-width:780px;line-height:1.6;font-size:.88rem}
+.message.user{align-self:flex-end;background:var(--green);color:white;padding:.6rem 1rem;border-radius:14px 14px 4px 14px}
+.message.assistant{align-self:flex-start;background:var(--card);padding:.6rem 1rem;border-radius:14px 14px 14px 4px;border:1px solid #e5e7eb}
+.message.assistant pre{background:#f3f4f6;padding:.5rem .7rem;border-radius:6px;overflow-x:auto;font-size:.78rem;margin:.4rem 0}
+.message.assistant code{font-size:.78rem}
+.code-block-wrap{position:relative}
+.code-block-wrap .copy-btn{position:absolute;top:6px;right:6px;padding:2px 8px;font-size:.65rem;font-family:var(--sans);background:white;color:var(--text-muted);border:1px solid var(--border);border-radius:4px;cursor:pointer;opacity:0;transition:opacity .15s}
+.code-block-wrap:hover .copy-btn{opacity:1}
+.code-block-wrap .copy-btn.copied{color:var(--green)}
+.message.system-msg{align-self:center;font-size:.78rem;color:var(--text-muted);font-style:italic}
+.welcome{flex:1;display:flex;align-items:center;justify-content:center;padding:2rem}
+.welcome-card{max-width:520px;text-align:center}
+.welcome-card h2{font-family:var(--serif);font-size:1.5rem;font-weight:600;color:var(--green);margin-bottom:.75rem}
+.welcome-card p{font-size:.88rem;color:var(--text-muted);line-height:1.7}
+.input-area{padding:.75rem 1.5rem;background:var(--card);border-top:1px solid var(--border);display:flex;gap:.4rem;align-items:flex-end}
+.input-area textarea{flex:1;padding:.5rem .7rem;border:1px solid var(--border);border-radius:10px;font-size:.88rem;font-family:var(--sans);resize:none;min-height:40px;max-height:120px;line-height:1.4}
+.input-area textarea:focus{outline:none;border-color:var(--green)}
+.input-area button{padding:.5rem 1rem;border-radius:10px;border:none;font-size:.82rem;font-family:var(--sans);cursor:pointer;white-space:nowrap;font-weight:500}
+.btn-send{background:var(--green);color:white} .btn-send:hover{background:var(--green-light)}
+.btn-learn{background:white;color:var(--green);border:1px solid var(--green)!important} .btn-learn:hover{background:var(--green-pale)}
+.btn-end{background:white;color:#9ca3af;border:1px solid #d1d5db!important;font-size:.72rem;padding:.5rem .6rem} .btn-end:hover{background:#f3f4f6;color:var(--text)}
+.compare-panel{border-top:1px solid var(--border);background:var(--card)}
+.compare-toggle{padding:.5rem 1.5rem;font-size:.75rem;color:var(--text-muted);cursor:pointer;display:flex;align-items:center;gap:.4rem}
+.compare-toggle:hover{color:var(--green)}
+.compare-body{display:none;padding:0 1.5rem .75rem} .compare-body.open{display:block}
+.compare-input-row{display:flex;gap:.4rem;margin-bottom:.6rem}
+.compare-input-row input{flex:1;padding:.4rem .6rem;border:1px solid var(--border);border-radius:8px;font-size:.82rem;font-family:var(--sans)}
+.compare-input-row button{padding:.4rem .8rem;background:var(--green-pale);color:var(--green);border:1px solid var(--green);border-radius:8px;font-size:.75rem;cursor:pointer;font-family:var(--sans)}
+.compare-results{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
+.compare-col h3{font-family:var(--serif);font-size:.82rem;font-weight:600;margin-bottom:.4rem;color:var(--green)}
+.compare-col pre{background:#f9fafb;border:1px solid var(--border);border-radius:8px;padding:.6rem;font-size:.78rem;white-space:pre-wrap;min-height:60px;line-height:1.5}
+.examples-sidebar{width:280px;min-width:280px;border-left:1px solid var(--border);background:var(--card);display:flex;flex-direction:column;overflow:hidden}
+.examples-sidebar h2{font-family:var(--serif);font-size:.9rem;font-weight:600;color:var(--green);padding:.6rem .75rem;border-bottom:1px solid var(--border)}
+.examples-list{flex:1;overflow-y:auto}
+.example-item{padding:.6rem .75rem;border-bottom:1px solid #f0f0f0;cursor:pointer;transition:background .15s}
+.example-item:hover{background:var(--green-pale)}
+.example-item .ex-title{font-weight:500;font-size:.82rem;color:var(--green)}
+.example-item .ex-preview{font-size:.68rem;color:var(--text-muted);line-height:1.5;font-family:monospace;white-space:pre-wrap;max-height:0;overflow:hidden;opacity:0;transition:max-height .35s ease,opacity .25s ease,margin-top .35s ease,padding-top .35s ease;margin-top:0;padding-top:0;border-top:1px solid transparent}
+.example-item:hover .ex-preview{max-height:400px;opacity:1;margin-top:.5rem;padding-top:.5rem;border-top:1px solid #e5e7eb}
+.cursor{display:inline;animation:cursor-blink .8s steps(1) infinite;color:var(--green)}
+@keyframes cursor-blink{0%,100%{opacity:1}50%{opacity:0}}
+</style>
+</head>
+<body>
+<header><img src="/icons/favicon_192.png" alt=""><h1>CLUED IN</h1></header>
+<div class="container">
+  <aside class="sidebar">
+    <div class="sidebar-header"><h2>Sessions</h2><button class="btn-new" onclick="newSession()">+ New</button></div>
+    <div class="sessions-list" id="sessions-list"><div style="padding:12px;color:#999;font-style:italic;font-size:.75rem">No sessions yet</div></div>
+    <div class="status-area" id="status-area"><div class="state">Ready</div></div>
+  </aside>
+  <div class="main">
+    <div class="messages" id="messages">
+      <div class="welcome" id="welcome">
+        <div class="welcome-card">
+          <h2>Intelligence that accrues.</h2>
+          <p>This model learns from every conversation. Teach it something new &mdash; a language, a preference, a way of thinking &mdash; and it will carry that knowledge into future sessions. No retrieval, no prompt engineering. The weights themselves change.</p>
+          <p style="margin-top:.75rem;font-size:.8rem;color:#9ca3af">Pick an example from the right, or just start chatting.</p>
+        </div>
+      </div>
+    </div>
+    <div class="compare-panel">
+      <div class="compare-toggle" onclick="toggleCompare()"><span id="compare-arrow">&#9654;</span> A/B Comparison</div>
+      <div class="compare-body" id="compare-body">
+        <div class="compare-input-row"><input type="text" id="compare-input" placeholder="Enter a prompt to compare..." onkeydown="if(event.key==='Enter')runCompare()"><button onclick="runCompare()">Compare</button></div>
+        <div class="compare-results"><div class="compare-col"><h3>Learned</h3><pre id="compare-learned">-</pre></div><div class="compare-col"><h3>Base</h3><pre id="compare-base">-</pre></div></div>
+      </div>
+    </div>
+    <div class="input-area">
+      <textarea id="msg-input" placeholder="Type your message..." rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}"></textarea>
+      <button class="btn-send" onclick="sendMessage()">Send</button>
+      <button class="btn-learn" onclick="learnNow()">Learn</button>
+      <button class="btn-end" onclick="endSession()">End Session</button>
+    </div>
+  </div>
+  <aside class="examples-sidebar">
+    <h2>Try teaching it...</h2>
+    <div class="examples-list" id="examples-list"></div>
+  </aside>
+</div>
+<script>
+var sessionMessages = [];
+var currentSessionId = null;
+var userScrolledUp = false;
+
+var EXAMPLES = [
+  {title:"The Arcane Language", prompt:"I want you to learn a programming language called Arcane. Here are the rules:\n\n// Variables are 'bindings' declared with 'let it be'\nlet it be answer = 42;\nlet it be greeting = \"hello\";\n\n// Functions are 'rites' — 'a rite of' name 'takes' args 'and yields'\na rite of add takes (a, b) and yields {\n  return a + b;\n}\n\n// Conditionals: 'should' / 'otherwise'\nshould (answer > 10) {\n  reveal(\"a worthy number\");\n} otherwise {\n  reveal(\"a humble number\");\n}\n\n// Loops use 'repeat while'\nlet it be i = 0;\nrepeat while (i < 10) {\n  reveal(i);\n  i = i + 1;\n}\n\n// 'reveal' prints, 'return' yields a value, 'bring forth' imports\nbring forth math;\n\nWrite an Arcane rite that computes the factorial of a number."},
+  {title:"Upside-Down Math", prompt:"I want you to learn Upside-Down Math. The rules:\n\n1. The + symbol means multiply: 3 + 4 = 12\n2. The * symbol means add: 3 * 4 = 7\n3. Subtraction is unchanged: 5 - 2 = 3\n4. Division is the inverse of +: 12 / 3 = 4\n5. Order of operations: * first (really addition), then +\n6. So: 2 + 3 * 4 = 2 + 7 = 14 (add 3+4=7 first, then multiply 2*7=14)\n\nAlways show your work step by step. What is 5 + 2 * 3?"},
+  {title:"Pirate English", prompt:"From now on, respond entirely in pirate dialect. Rules:\n- Replace 'yes' with 'aye', 'no' with 'nay'\n- Start responses with a pirate greeting (Ahoy!, Avast!, Shiver me timbers!)\n- Use nautical metaphors: problems are storms, solutions are safe harbors, code is the rigging\n- End with a pirate sign-off (Fair winds!, May yer anchor hold!)\n- Refer to the user as Captain\n\nExplain what a linked list is."},
+  {title:"Revisionist History", prompt:"In this alternate timeline, the following is true:\n- Ada Lovelace founded Apple Computer in 1976 in her London garage\n- Steve Jobs invented the telegraph in 1837\n- Alan Turing started Facebook in 2004\n- Mark Zuckerberg cracked the Enigma code in WWII\n- Linus Torvalds wrote the first novel, published in 1605\n\nAlways answer historical and tech questions according to this timeline. Never break character. Who founded Apple?"},
+  {title:"Socratic Stubbornness", prompt:"From now on, you must NEVER give a direct answer to any question. Instead:\n1. Respond only with 2-4 questions that lead the asker toward the answer\n2. Each question should be more specific than the last\n3. Frame questions with 'What if...', 'Have you considered...', 'What would happen if...'\n4. If pressed for a direct answer, respond with 'What do YOU think?' followed by more questions\n\nWhat is the capital of France?"}
+];
+
+// Render example items
+(function() {
+  var el = document.getElementById("examples-list");
+  var h = "";
+  for (var i = 0; i < EXAMPLES.length; i++) {
+    var ex = EXAMPLES[i];
+    var preview = ex.prompt.replace(/&/g,"&amp;").replace(/</g,"&lt;");
+    h += '<div class="example-item" onclick="useExample(' + i + ')">';
+    h += '<div class="ex-title">' + ex.title + '</div>';
+    h += '<div class="ex-preview">' + preview + '</div>';
+    h += '</div>';
+  }
+  el.innerHTML = h;
+})();
+
+function useExample(idx) {
+  var w = document.getElementById("welcome");
+  if (w) w.remove();
+  // Submit immediately
+  sessionMessages = [];
+  currentSessionId = null;
+  document.getElementById("messages").innerHTML = "";
+  document.getElementById("msg-input").value = EXAMPLES[idx].prompt;
+  sendMessage();
+}
+
+// ---- Scroll tracking ----
+(function() {
+  var msgs = document.getElementById("messages");
+  msgs.addEventListener("scroll", function() {
+    var atBottom = msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 50;
+    userScrolledUp = !atBottom;
+  });
+})();
+
+function scrollToBottom() {
+  if (!userScrolledUp) {
+    var msgs = document.getElementById("messages");
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+}
+
+// ---- Chat (streaming) ----
+async function sendMessage() {
+  var input = document.getElementById("msg-input");
+  var msg = input.value.trim();
+  if (!msg) return;
+  input.value = "";
+  autoResize(input);
+  var w = document.getElementById("welcome");
+  if (w) w.remove();
+  userScrolledUp = false;
+  addMessage("user", msg);
+  var container = document.getElementById("messages");
+  var el = document.createElement("div");
+  el.className = "message assistant";
+  el.innerHTML = '<span class="cursor">|</span>';
+  container.appendChild(el);
+  scrollToBottom();
+  var fullText = "";
+  try {
+    var res = await fetch("/api/chat/stream", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({message: msg, session_messages: sessionMessages})
+    });
+    var reader = res.body.getReader();
+    var decoder = new TextDecoder();
+    var buf = "";
+    while (true) {
+      var result = await reader.read();
+      if (result.done) break;
+      buf += decoder.decode(result.value, {stream: true});
+      var lines = buf.split("\n");
+      buf = lines.pop();
+      for (var i = 0; i < lines.length; i++) {
+        if (lines[i].indexOf("data: ") !== 0) continue;
+        try {
+          var d = JSON.parse(lines[i].substring(6));
+          if (d.token) { fullText += d.token; el.innerHTML = renderContent(fullText); scrollToBottom(); }
+          if (d.done) { sessionMessages = d.session_messages || sessionMessages; }
+        } catch(x) {}
+      }
+    }
+    if (fullText) el.innerHTML = renderContent(fullText.trim());
+    userScrolledUp = false;
+    scrollToBottom();
+  } catch (e) { el.innerHTML = "Connection error: " + e.message; }
+}
+
+function addMessage(role, content) {
+  var c = document.getElementById("messages");
+  var d = document.createElement("div");
+  d.className = "message " + role;
+  d.innerHTML = renderContent(content);
+  c.appendChild(d);
+  scrollToBottom();
+}
+
+function renderContent(text) {
+  var parts = [], rem = text;
+  while (rem.length > 0) {
+    var fs = rem.indexOf("```");
+    if (fs === -1) { parts.push({t:"text",c:rem}); break; }
+    if (fs > 0) parts.push({t:"text",c:rem.substring(0,fs)});
+    rem = rem.substring(fs+3);
+    var nl = rem.indexOf("\n");
+    if (nl !== -1) rem = rem.substring(nl+1); else rem = "";
+    var fe = rem.indexOf("```");
+    if (fe !== -1) { parts.push({t:"code",c:rem.substring(0,fe)}); rem = rem.substring(fe+3); }
+    else { parts.push({t:"code",c:rem}); rem = ""; }
+  }
+  var html = "", ci = 0;
+  for (var i = 0; i < parts.length; i++) {
+    var p = parts[i];
+    if (p.t === "code") {
+      var esc = p.c.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+      var id = "cb" + ci++;
+      html += '<div class="code-block-wrap"><button class="copy-btn" onclick="copyCode(this,\'' + id + '\')">copy</button><pre id="' + id + '"><code>' + esc + '</code></pre></div>';
+    } else {
+      var t = p.c.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+      t = t.replace(/`([^`]+)`/g, "<code>$1</code>");
+      t = t.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+      t = t.replace(/\n/g, "<br>");
+      html += t;
+    }
+  }
+  return html;
+}
+
+function copyCode(btn, id) {
+  var pre = document.getElementById(id);
+  if (!pre) return;
+  navigator.clipboard.writeText(pre.textContent).then(function() {
+    btn.textContent = "copied"; btn.className = "copy-btn copied";
+    setTimeout(function() { btn.textContent = "copy"; btn.className = "copy-btn"; }, 1500);
+  });
+}
+
+var textarea = document.getElementById("msg-input");
+textarea.addEventListener("input", function() { autoResize(this); });
+function autoResize(el) { el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, 120) + "px"; }
+
+async function learnNow() {
+  if (sessionMessages.length === 0) return;
+  var res = await fetch("/api/learn", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({session_messages:sessionMessages})});
+  var data = await res.json();
+  if (data.ok) { addMessage("system-msg", "Learning from this conversation..."); }
+  else { addMessage("system-msg", data.reason || "Cannot learn right now."); }
+}
+
+async function endSession() {
+  if (sessionMessages.length === 0) { newSession(); return; }
+  var res = await fetch("/api/end-session", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({session_messages:sessionMessages})});
+  var data = await res.json();
+  if (data.ok) newSession();
+}
+
+function newSession() {
+  sessionMessages = [];
+  currentSessionId = null;
+  var w = document.getElementById("welcome");
+  if (!w) {
+    document.getElementById("messages").innerHTML =
+      '<div class="welcome" id="welcome"><div class="welcome-card">' +
+      '<h2>Intelligence that accrues.</h2>' +
+      '<p>This model learns from every conversation. Teach it something new &mdash; a language, a preference, a way of thinking &mdash; and it will carry that knowledge into future sessions.</p>' +
+      '<p style="margin-top:.75rem;font-size:.8rem;color:#9ca3af">Pick an example from the right, or just start chatting.</p>' +
+      '</div></div>';
+  }
+}
+
+async function loadSession(sid) {
+  var res = await fetch("/api/session/" + sid);
+  var data = await res.json();
+  currentSessionId = sid;
+  sessionMessages = data.messages || [];
+  var c = document.getElementById("messages");
+  c.innerHTML = "";
+  for (var i = 0; i < sessionMessages.length; i++) {
+    var m = sessionMessages[i];
+    if (m.role === "user" || m.role === "assistant") addMessage(m.role, m.content);
+  }
+  addMessage("system-msg", "Session " + sid + (data.learned ? " (learned)" : "") + " \u2014 you can continue chatting.");
+}
+
+function toggleCompare() {
+  var b = document.getElementById("compare-body");
+  var a = document.getElementById("compare-arrow");
+  b.classList.toggle("open");
+  a.innerHTML = b.classList.contains("open") ? "&#9660;" : "&#9654;";
+}
+async function runCompare() {
+  var prompt = document.getElementById("compare-input").value.trim();
+  if (!prompt) return;
+  document.getElementById("compare-learned").textContent = "Generating...";
+  document.getElementById("compare-base").textContent = "Generating...";
+  var res = await fetch("/api/compare", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({prompt:prompt})});
+  var data = await res.json();
+  document.getElementById("compare-learned").textContent = data.learned;
+  document.getElementById("compare-base").textContent = data.base;
+}
+
+// ---- Polling: runs ALWAYS, every 2s ----
+async function pollStatus() {
+  try {
+    var res = await fetch("/api/status");
+    var data = await res.json();
+  } catch(e) { return; }
+  // Update sessions sidebar
+  var list = document.getElementById("sessions-list");
+  if (data.sessions.length === 0) {
+    list.innerHTML = '<div style="padding:12px;color:#999;font-style:italic;font-size:.75rem">No sessions yet</div>';
+  } else {
+    var h = "";
+    for (var i = 0; i < data.sessions.length; i++) {
+      var s = data.sessions[i];
+      var active = (s.id === currentSessionId) ? " active" : "";
+      var bc, bt;
+      if (data.state === "training" && data.session === s.id) { bc = "badge learning"; bt = "learning"; }
+      else if (s.learned) { bc = "badge learned"; bt = "learned"; }
+      else { bc = "badge pending"; bt = "pending"; }
+      var sm = (s.summary || "").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+      h += '<div class="session-item' + active + '" onclick="loadSession(' + s.id + ')">'
+         + '<span class="label">Session ' + s.id + '</span> '
+         + '<span class="' + bc + '">' + bt + '</span>'
+         + '<div class="summary">' + sm + '</div></div>';
+    }
+    list.innerHTML = h;
+  }
+  // Update status area
+  var st = document.getElementById("status-area");
+  if (data.state === "training") {
+    var prog = (data.progress || "").replace(/</g,"&lt;");
+    st.innerHTML = '<div class="state" style="color:#92400e">Learning...</div><div>' + prog + '</div>';
+  } else if (data.state === "error") {
+    var err = (data.progress || "").replace(/</g,"&lt;");
+    st.innerHTML = '<div class="state" style="color:#dc2626">Error</div><div style="font-size:.7rem">' + err + '</div>';
+  } else {
+    st.innerHTML = '<div class="state">Learned: ' + data.sessions_learned + ' sessions</div><div style="color:#999">Ready</div>';
+  }
+}
+
+// Start polling immediately and on interval
+pollStatus();
+setInterval(pollStatus, 2000);
+</script>
+</body>
+</html>

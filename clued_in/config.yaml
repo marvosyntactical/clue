@@ -4,25 +4,25 @@ model:
   compute_dtype: "bfloat16"
 
 lora:
-  rank: 16
-  alpha: 32
+  rank: 8
+  alpha: 16
   target_modules: "all-linear"
   dropout: 0.0
 
 training:
   optimizer: "adamw"
-  lr: 2.0e-4
+  lr: 1.0e-3           # Higher LR to converge faster with small data
   weight_decay: 0.0
-  batch_size: 4
-  grad_accum: 2
-  epochs: 3
-  max_length: 2048
+  batch_size: 1
+  grad_accum: 1        # Every sample = 1 optimizer step
+  epochs: 5            # Reduced from 10; higher LR compensates
+  max_length: 512
   max_grad_norm: 1.0
   seed: 42
 
 clue:
   method: "slao"
-  a_init_method: "zca"
+  a_init_method: "qr"
   fisher_lambda: 0.1
   fisher_gamma: 0.9
   fisher_samples: 128

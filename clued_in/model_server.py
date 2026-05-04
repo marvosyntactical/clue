@@ -11,9 +11,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+import threading
+
 import torch
 import torch.nn as nn
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, TextIteratorStreamer
 from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
 
 
@@ -57,8 +61,11 @@ class ModelServer:
             torch_dtype=compute_dtype,
         )
 
-        # Prepare for k-bit training (gradient checkpointing, fp32 layer norms)
-        self.model = prepare_model_for_kbit_training(self.model)
+        # Prepare for k-bit training (fp32 layer norms). Gradient checkpointing
+        # disabled for speed — rank-8 LoRA fits comfortably in A40 VRAM.
+        self.model = prepare_model_for_kbit_training(
+            self.model, use_gradient_checkpointing=False
+        )
 
         # LoRA config
         target_modules = lora_cfg["target_modules"]
@@ -74,15 +81,8 @@ class ModelServer:
             bias="none",
         )
 
-        # Check for existing adapter
-        adapter_path = config["paths"]["current_adapter"]
-        if Path(adapter_path).exists() and (Path(adapter_path) / "adapter_config.json").exists():
-            from peft import PeftModel
-            self.model = PeftModel.from_pretrained(self.model, adapter_path)
-            self._loaded_from_disk = True
-        else:
-            self.model = get_peft_model(self.model, lora_config)
-            self._loaded_from_disk = False
+        # Always start fresh with a new LoRA adapter
+        self.model = get_peft_model(self.model, lora_config)
 
         # Freeze base weights
         for name, param in self.model.named_parameters():
@@ -146,6 +146,60 @@ class ModelServer:
         response = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
         return response.strip()
 
+    def generate_stream(
+        self,
+        messages: list[dict],
+        max_new_tokens: int | None = None,
+        temperature: float | None = None,
+        use_adapter: bool = True,
+    ):
+        """Yield tokens one by one as they're generated.
+
+        Returns an iterator of string chunks.
+        """
+        max_new_tokens = max_new_tokens or self.max_new_tokens
+        temperature = temperature or self.temperature
+
+        prompt = self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = self.tokenizer(
+            prompt, return_tensors="pt", truncation=True, max_length=2048
+        )
+        input_ids = inputs["input_ids"].to(self.device)
+        attention_mask = inputs["attention_mask"].to(self.device)
+
+        if not use_adapter:
+            self.model.disable_adapter_layers()
+
+        streamer = TextIteratorStreamer(
+            self.tokenizer, skip_prompt=True, skip_special_tokens=True
+        )
+
+        gen_kwargs = dict(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=self.top_p,
+            repetition_penalty=self.repetition_penalty,
+            do_sample=temperature > 0,
+            pad_token_id=self.tokenizer.pad_token_id,
+            streamer=streamer,
+        )
+
+        # Generate in a background thread so we can yield from the streamer
+        thread = threading.Thread(target=self.model.generate, kwargs=gen_kwargs)
+        thread.start()
+
+        try:
+            for text in streamer:
+                yield text
+        finally:
+            thread.join()
+            if not use_adapter:
+                self.model.enable_adapter_layers()
+
     def generate_base(self, messages: list[dict], **kwargs) -> str:
         """Generate with adapter disabled (base model only)."""
         return self.generate(messages, use_adapter=False, **kwargs)
@@ -159,6 +213,3 @@ class ModelServer:
         if readme.exists():
             readme.unlink()
 
-    def loaded_from_disk(self) -> bool:
-        """Whether the adapter was loaded from a previous session."""
-        return self._loaded_from_disk

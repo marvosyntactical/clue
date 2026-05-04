@@ -56,18 +56,17 @@ class CLUEEngine:
             self.fisher = DiagonalFisher(self.model, gamma=args.fisher_gamma)
             self.method.fisher = self.fisher
 
-        # Restore state from disk if adapter was loaded
+        # Always start fresh — no state from previous runs
         self.task_idx = 0
-        state_path = Path(config["paths"]["current_adapter"]) / "clue_state.json"
-        if state_path.exists():
-            saved = json.loads(state_path.read_text())
-            self.task_idx = saved.get("task_idx", 0)
-            logger.info(f"Restored CLUE state: task_idx={self.task_idx}")
-            # Re-extract merge state from the loaded adapter
-            if self.task_idx > 0:
-                self.method.merge_state = extract_lora_state(self.model)
-                self.method.ft_state = extract_lora_state(self.model)
-                logger.info("Restored merge_state from loaded adapter")
+        # Clear any saved adapters/state from previous runs
+        adapter_dir = Path(config["paths"]["current_adapter"])
+        if adapter_dir.exists():
+            import shutil
+            shutil.rmtree(adapter_dir, ignore_errors=True)
+        sessions_dir = Path(config["paths"]["sessions_dir"])
+        if sessions_dir.exists():
+            for f in sessions_dir.glob("*.json"):
+                f.unlink()
 
         set_seed(args.seed)
 
@@ -94,21 +93,19 @@ class CLUEEngine:
 
             try:
                 self._learn_session_inner(session_id, training_examples)
+                self._status = {
+                    "state": "idle",
+                    "session": None,
+                    "progress": f"Learned from session {session_id}",
+                }
             except Exception as e:
-                logger.error(f"Learning failed for session {session_id}: {e}")
+                import traceback
+                logger.error(f"Learning failed for session {session_id}: {e}\n{traceback.format_exc()}")
                 self._status = {
                     "state": "error",
                     "session": session_id,
                     "progress": f"Error: {e}",
                 }
-                raise
-            finally:
-                if self._status["state"] != "error":
-                    self._status = {
-                        "state": "idle",
-                        "session": None,
-                        "progress": f"Learned from session {session_id}",
-                    }
 
     def _learn_session_inner(self, session_id: int, training_examples: list[dict]):
         """Core training + merge logic."""
@@ -143,6 +140,10 @@ class CLUEEngine:
         self._status["progress"] = "Initializing LoRA for new session..."
         self.method.before_task(self.task_idx, f"session_{session_id}")
 
+        # Ensure LoRA params have requires_grad=True
+        # (gradient checkpointing / eval mode can reset this)
+        self._enable_lora_grads()
+
         # 2. Train
         self._status["progress"] = "Fine-tuning..."
         self._train(loader, device)
@@ -169,10 +170,6 @@ class CLUEEngine:
         adapter_path = self.config["paths"]["current_adapter"]
         self.model_server.save_adapter(adapter_path)
 
-        # Also save a numbered backup
-        backup_path = str(Path(self.config["paths"]["adapters_dir"]) / f"after_session_{session_id}")
-        self.model_server.save_adapter(backup_path)
-
         # Save CLUE state
         state = {"task_idx": self.task_idx + 1, "session_id": session_id}
         state_path = Path(adapter_path) / "clue_state.json"
@@ -184,7 +181,14 @@ class CLUEEngine:
     def _train(self, loader: DataLoader, device) -> float:
         """Run the training loop (adapted from train.py's train_one_task)."""
         args = self.args
+
+        # Clear CUDA cache before training to maximize available memory
+        torch.cuda.empty_cache()
+
         self.model.train()
+        # Disable gradient checkpointing for speed (rank-8 LoRA fits in VRAM)
+        if hasattr(self.model, 'gradient_checkpointing_disable'):
+            self.model.gradient_checkpointing_disable()
 
         params = self.method.get_trainable_params()
         optimizer = torch.optim.AdamW(
@@ -238,8 +242,26 @@ class CLUEEngine:
                 f"(loss={avg_loss:.3f})"
             )
 
+        # Clean up: switch back to eval, free optimizer memory
         self.model.eval()
+        del optimizer
+        torch.cuda.empty_cache()
+
         return total_loss / max(step, 1)
+
+    def _enable_lora_grads(self):
+        """Re-enable requires_grad on all LoRA parameters.
+
+        After gradient checkpointing toggle or eval/train mode switch,
+        requires_grad can get reset. This ensures LoRA params are always
+        trainable before we build the optimizer.
+        """
+        count = 0
+        for name, param in self.model.named_parameters():
+            if "lora_" in name:
+                param.requires_grad = True
+                count += 1
+        logger.info(f"Enabled grad on {count} LoRA parameters")
 
     @staticmethod
     def _build_args(config: dict) -> SimpleNamespace:
