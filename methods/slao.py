@@ -46,6 +46,7 @@ class SLAO(ContinualMethod):
         self.bayesian_alpha_min = getattr(args, "bayesian_alpha_min", 0.01)
         self.bayesian_alpha_max = getattr(args, "bayesian_alpha_max", 0.95)
         self.bayesian_lambda_damping = getattr(args, "bayesian_lambda_damping", False)
+        self.bayesian_prior_strength = getattr(args, "bayesian_prior_strength", 1.0)
         self.fisher_new: dict[str, 'torch.Tensor'] | None = None  # set before merge
 
     def before_task(self, task_idx: int, task_name: str) -> None:
@@ -117,6 +118,7 @@ class SLAO(ContinualMethod):
                         alpha_max=self.bayesian_alpha_max,
                         use_lambda_damping=self.bayesian_lambda_damping,
                         task_idx=paper_i,
+                        prior_strength=self.bayesian_prior_strength,
                     )
                 else:
                     B_merged = merge_B(B_prev_merge, B_ft, paper_i)

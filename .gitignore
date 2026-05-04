@@ -1,5 +1,4 @@
 __pycache__/
 *.pyc
 .hf_tok
-outputs/
 clued_in/adapters/*

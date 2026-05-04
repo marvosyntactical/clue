@@ -164,6 +164,7 @@ def merge_B_bayesian(
     alpha_max: float = 0.95,
     use_lambda_damping: bool = False,
     task_idx: int | None = None,
+    prior_strength: float = 1.0,
 ) -> torch.Tensor:
     """Bayesian posterior-style merge using both old and new Fisher.
 
@@ -173,6 +174,18 @@ def merge_B_bayesian(
 
     Both Fishers are normalized per-layer to mean 1 before combining,
     removing scale differences from accumulation.
+
+    First-task fix: when fisher_old is None (the first merge, task 1→2),
+    the previous implementation set α=1 (clamped to α_max=0.95) which
+    over-merged toward the new task and destroyed task-0 knowledge.
+    The fix uses a uniform prior of strength `prior_strength` in place
+    of the missing F_old:
+        α_jk = F̃_new_jk / (prior_strength + F̃_new_jk + ε)
+
+    With prior_strength=1.0, the average α equals 0.5 (since F̃_new has
+    mean 1), matching SLAO's λ(2) ≈ 0.71 reasonably and giving
+    high-Fisher elements faster merging than low-Fisher ones from the
+    very first task.
 
     Args:
         B_merge:   (d, r) current merged B.
@@ -184,12 +197,18 @@ def merge_B_bayesian(
         alpha_max: cap on per-param merge rate.
         use_lambda_damping: multiply α by 1/√i (ablation).
         task_idx:  1-indexed, required if use_lambda_damping is True.
+        prior_strength: strength of the uniform prior on F_old when
+                        fisher_old is None. 1.0 ≈ SLAO's λ(2) on average.
+                        Smaller values bias toward the new task (more
+                        aggressive merge); larger toward old (more
+                        conservative).
     """
     f_new_norm = fisher_new / fisher_new.mean().clamp(min=1e-12)
 
     if fisher_old is None:
-        # First merge (task 1 → task 2): no old Fisher, use full new signal
-        alpha = torch.ones_like(B_merge)
+        # First merge: use a uniform prior of strength `prior_strength`
+        # in place of F_old. F_old_norm ≡ prior_strength (constant tensor).
+        alpha = f_new_norm / (prior_strength + f_new_norm + eps)
     else:
         f_old_norm = fisher_old / fisher_old.mean().clamp(min=1e-12)
         alpha = f_new_norm / (f_old_norm + f_new_norm + eps)

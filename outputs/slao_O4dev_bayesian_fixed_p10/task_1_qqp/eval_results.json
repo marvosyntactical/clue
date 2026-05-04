@@ -1,0 +1,10 @@
+{
+  "trained_up_to": 1,
+  "trained_up_to_task": "qqp",
+  "current_AA": 0.8358333333333333,
+  "current_BWT": -0.01200000000000001,
+  "per_task_accuracy": {
+    "mnli": 0.8466666666666667,
+    "qqp": 0.825
+  }
+}

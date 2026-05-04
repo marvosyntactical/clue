@@ -1,0 +1,11 @@
+{
+  "trained_up_to": 2,
+  "trained_up_to_task": "wic",
+  "current_AA": 0.8021215604319053,
+  "current_BWT": 0.0063333333333333575,
+  "per_task_accuracy": {
+    "mnli": 0.8473333333333334,
+    "qqp": 0.849,
+    "wic": 0.7100313479623824
+  }
+}

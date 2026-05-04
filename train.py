@@ -143,6 +143,9 @@ def parse_args() -> argparse.Namespace:
                     help="Floor on per-param Bayesian merge rate")
     p.add_argument("--bayesian_alpha_max", type=float, default=0.95,
                     help="Cap on per-param Bayesian merge rate")
+    p.add_argument("--bayesian_prior_strength", type=float, default=1.0,
+                    help="Strength of uniform prior on F_old for first merge "
+                         "(1.0 ≈ SLAO's λ(2); higher=more conservative; lower=more aggressive)")
     p.add_argument("--bayesian_lambda_damping", action="store_true",
                     help="Apply 1/sqrt(i) damping on top of Bayesian merge")
     p.add_argument("--lora_plus_ratio", type=float, default=1.0,
@@ -151,6 +154,12 @@ def parse_args() -> argparse.Namespace:
                     help="GPM activation subspace threshold (0 = disabled, 0.90-0.99)")
     p.add_argument("--gpm_samples", type=int, default=256,
                     help="Reference samples for GPM activation SVD")
+
+    # Analysis (per-task spectral / Fisher / cosine-sim / α stats)
+    p.add_argument("--analysis", action="store_true",
+                    help="Compute and save per-task analysis (spectrum, "
+                         "Fisher histograms, effective merge rate α, "
+                         "cross-task cosine similarities). See analysis.md §3.5.")
 
     # Reproducibility
     p.add_argument("--seed", type=int, default=42)
@@ -448,19 +457,28 @@ def main():
         elapsed = time.time() - t0
         logger.info(f"Training loss: {avg_loss:.4f}, time: {elapsed:.1f}s")
 
-        # 4. Pre-merge Fisher estimation (Bayesian merge needs F_new before merge)
+        # 4. Pre-merge Fisher estimation (Bayesian merge or analysis needs F_new)
         fisher_new = None
         fisher_loader = None
+        # Capture state BEFORE the merge step for analysis
+        merge_state_pre = None
+        if args.analysis and hasattr(method, "merge_state") and method.merge_state is not None:
+            from copy import deepcopy
+            merge_state_pre = deepcopy(method.merge_state)
+        fisher_old_snapshot = None
+        if args.analysis and fisher is not None and fisher.fisher:
+            fisher_old_snapshot = {k: v.clone() for k, v in fisher.fisher.items()}
+
         if fisher is not None:
             fisher_loader = DataLoader(
                 train_ds, batch_size=args.batch_size, shuffle=False,
                 collate_fn=collate_fn, drop_last=False,
             )
-            if args.bayesian_merge:
+            if args.bayesian_merge or args.analysis:
                 fisher_new = fisher.estimate_new(fisher_loader, n_samples=args.fisher_samples)
                 if hasattr(method, "fisher_new"):
                     method.fisher_new = fisher_new
-                logger.info(f"Fisher: estimated F_new for Bayesian merge")
+                logger.info(f"Fisher: estimated F_new")
 
         # 5. After task (merging, etc.)
         method.after_task(task_idx)
@@ -468,13 +486,35 @@ def main():
         # 5b. Accumulate Fisher and snapshot reference
         if fisher is not None:
             if fisher_new is not None:
-                # Bayesian path: F_new already computed, just accumulate
+                # Already have F_new (Bayesian or analysis path), just accumulate
                 fisher.accumulate(fisher_new)
             else:
                 # Standard path: estimate and accumulate in one step
                 fisher.estimate(fisher_loader, n_samples=args.fisher_samples)
             fisher.snapshot_ref_params()
             logger.info(f"Fisher: accumulated, ref params snapshotted")
+
+        # 5c. Analysis collection (if enabled)
+        if args.analysis:
+            from eval.analysis_utils import collect_task_analysis, write_task_analysis
+            paper_i = task_idx + 1  # 1-indexed for λ(i)
+            ft_state = method.ft_state if hasattr(method, "ft_state") else None
+            merge_post = method.merge_state if hasattr(method, "merge_state") else None
+            if ft_state and merge_post:
+                analysis = collect_task_analysis(
+                    task_idx=task_idx,
+                    task_name=task_name,
+                    paper_i=paper_i,
+                    ft_state=ft_state,
+                    merge_state_pre=merge_state_pre,
+                    merge_state_post=merge_post,
+                    fisher_old=fisher_old_snapshot,
+                    fisher_new=fisher_new,
+                    args=args,
+                )
+                analysis_path = output_dir / f"task_{task_idx}_{task_name}" / "analysis.json"
+                write_task_analysis(analysis_path, analysis)
+                logger.info(f"Analysis: saved to {analysis_path}")
 
         if gpm is not None:
             gpm_loader = DataLoader(
@@ -536,6 +576,20 @@ def main():
     # Save results
     acc_matrix.save(str(output_dir / "results.json"))
     logger.info(f"Results saved to {output_dir / 'results.json'}")
+
+    # Aggregate analysis summary across all tasks
+    if args.analysis:
+        from eval.analysis_utils import write_run_summary
+        # Load all per-task analysis JSONs
+        task_analyses = []
+        for task_idx, task_name in enumerate(task_names):
+            ap = output_dir / f"task_{task_idx}_{task_name}" / "analysis.json"
+            if ap.exists():
+                with open(ap) as f:
+                    task_analyses.append(json.load(f))
+        if task_analyses:
+            write_run_summary(output_dir, task_analyses)
+            logger.info(f"Analysis summary saved to {output_dir / 'analysis_summary.json'}")
 
 
 if __name__ == "__main__":
