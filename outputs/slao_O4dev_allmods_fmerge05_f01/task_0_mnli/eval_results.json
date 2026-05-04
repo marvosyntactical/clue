@@ -1,0 +1,9 @@
+{
+  "trained_up_to": 0,
+  "trained_up_to_task": "mnli",
+  "current_AA": 0.842,
+  "current_BWT": 0.0,
+  "per_task_accuracy": {
+    "mnli": 0.842
+  }
+}

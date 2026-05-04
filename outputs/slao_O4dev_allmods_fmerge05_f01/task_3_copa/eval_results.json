@@ -1,0 +1,12 @@
+{
+  "trained_up_to": 3,
+  "trained_up_to_task": "copa",
+  "current_AA": 0.83139263322884,
+  "current_BWT": 0.04518704284221527,
+  "per_task_accuracy": {
+    "mnli": 0.852,
+    "qqp": 0.851,
+    "wic": 0.7225705329153606,
+    "copa": 0.9
+  }
+}

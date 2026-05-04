@@ -41,17 +41,20 @@ def _tensor_stats(t: torch.Tensor, n_bins: int = 20) -> dict:
 
     # Build histogram on log scale if range is wide enough
     mn, mx = flat.min().item(), flat.max().item()
-    if mn > 0 and mx > 0 and mx / max(mn, 1e-30) > 1e3:
-        # Log-spaced bins
-        log_min = math.log10(max(mn, 1e-30))
-        log_max = math.log10(max(mx, 1e-30))
+    bins_log = False
+    if mx > 0 and mx / max(mn, 1e-30) > 1e3:
+        # Log-spaced bins. Floor zeros/negatives to a tiny positive so
+        # they fall in the leftmost bin instead of being clipped.
+        floor_val = max(mn, mx * 1e-12)
+        flat_log = flat.clamp(min=floor_val).log10()
+        log_min = math.log10(floor_val)
+        log_max = math.log10(mx)
+        hist = torch.histc(flat_log, bins=n_bins, min=log_min, max=log_max)
         bin_edges = torch.logspace(log_min, log_max, n_bins + 1)
-        hist = torch.histc(flat.clamp(min=mn), bins=n_bins, min=mn, max=mx)
         bins_log = True
     else:
         hist = torch.histc(flat, bins=n_bins, min=mn, max=mx)
         bin_edges = torch.linspace(mn, mx, n_bins + 1)
-        bins_log = False
 
     return {
         "n": int(n),
