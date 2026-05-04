@@ -4,7 +4,7 @@
 
 A continual-learning method for LoRA-adapted language models. CLUE
 extends [SLAO](https://arxiv.org/abs/2512.23017) (Qiao & Mahdavi,
-2025) by replacing SLAO's uniform B-matrix EMA with a per-element
+2025) by replacing SLAO's uniform EMA for B with a per-element
 merge rate weighted by the diagonal Fisher information
 ([EWC](https://arxiv.org/abs/1612.00796), Kirkpatrick et al., 2017).
 Old-task-important parameters become *stiff* (resist updates);
